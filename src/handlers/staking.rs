@@ -1,34 +1,32 @@
 use axum::{
-  extract::{Query, State},
+  extract::{Query, State, Path},
   Json,
 };
 use std::{
-  sync::Arc,
-  time::Duration, ops::Div,
+  ops::Div, str::FromStr, sync::Arc, time::Duration
 };
 use namada_sdk::{
-  proof_of_stake::{PosParams, types::ValidatorState},
-  rpc,
-  // core::ledger::parameters::{storage},
-  types::{token::NATIVE_SCALE, dec::Dec},
+   proof_of_stake::{types::ValidatorState, PosParams}, rpc, types::{address, dec::Dec, token::NATIVE_SCALE}
 };
+
+use namada_sdk::types::address::Address;
 use namada_sdk::types::parameters::EpochDuration;
 use namada_parameters::storage;
 
 use crate::{app::app_state::AppState, model::staking::CosmosValStatus};
 use crate::error::api_error::ApiError;
 use crate::model::{
-  staking::{PoolResponse, PoolInfo, ParamsResponse, ValidatorsQueryParams, ValidatorsResponse, ValidatorInfo, ValidatorDescription, ConsensusKeyInfo, CommissionInfo, RatesInfo},
+  staking::{PoolResponse, PoolInfo, ParamsResponse, ValidatorsQueryParams, ValidatorsResponse, ValidatorResponse, ValidatorInfo, ValidatorDescription, ConsensusKeyInfo, CommissionInfo, RatesInfo},
   shared::{NAM, DEFAULT_TIMESTAMP, PaginationInfo, SuffixedDur},
 };
 
 
-pub async fn pool_handler(State(app_state): State<Arc<AppState>>) 
+pub async fn pool_handler(State(app_state): State<Arc<AppState>>)
   -> Result<Json<PoolResponse>, ApiError> {
 
   let current_epoch = rpc::query_epoch(app_state.get_client()).await?;
   let bonded_tokens = rpc::get_total_staked_tokens(app_state.get_client(), current_epoch).await?.div(NATIVE_SCALE as u64);
-  
+
   //TODO: not_bonded tokens
   let response = PoolResponse {
     pool: PoolInfo { not_bonded_tokens: "1000000000".to_string(), bonded_tokens },
@@ -37,9 +35,9 @@ pub async fn pool_handler(State(app_state): State<Arc<AppState>>)
   Ok(Json(response))
 }
 
-pub async fn params_handler(State(app_state): State<Arc<AppState>>) 
+pub async fn params_handler(State(app_state): State<Arc<AppState>>)
   -> Result<Json<ParamsResponse>, ApiError> {
-  
+
   let pos_params: PosParams = rpc::get_pos_params(app_state.get_client()).await?;
   let epoch_dur: EpochDuration = rpc::query_storage_value(app_state.get_client(), &storage::get_epoch_duration_storage_key()).await?;
   let unbonding_period = Duration::from(epoch_dur.min_duration) * (pos_params.owned.unbonding_len as u32);
@@ -56,7 +54,74 @@ pub async fn params_handler(State(app_state): State<Arc<AppState>>)
   Ok(Json(response))
 }
 
-pub async fn validators_handler(query: Query<ValidatorsQueryParams>, State(app_state): State<Arc<AppState>>) 
+pub async fn validator_handler(Path(valStr): Path<String>, State(app_state): State<Arc<AppState>>)
+  -> Result<Json<ValidatorResponse>, ApiError> {
+
+  let current_epoch = rpc::query_epoch(app_state.get_client()).await?;
+  let mut response = ValidatorResponse::new();
+  let validator = Address::from_str(&valStr).unwrap();
+
+  let state = rpc::get_validator_state(app_state.get_client(), &validator, Some(current_epoch)).await?;
+  let (jailed, status) = match state {
+    Some(state) => map_status_namada_to_cosmos(state),
+    None => (true, CosmosValStatus::BOND_STATUS_UNBONDED)
+  };
+
+  let (metadata, commission_info) = rpc::query_metadata(app_state.get_client(), &validator, Some(current_epoch)).await?;
+  let description: ValidatorDescription = match metadata {
+    Some(metadata) => {
+      ValidatorDescription {
+        moniker: validator.clone(),
+        identity: metadata.discord_handle,
+        website: metadata.website,
+        security_contact: Some(metadata.email),
+        details: metadata.description,
+      }
+    }
+    None => ValidatorDescription::empty(&validator)
+  };
+
+  let commission = match commission_info {
+    Some(commission_info) => {
+      CommissionInfo {
+        commission_rates: RatesInfo {
+          rate: commission_info.commission_rate,
+          max_rate: Dec::one(), // no such paramater in Namada
+          max_change_rate: commission_info.max_commission_change_per_epoch,
+        },
+        //TODO: placeholder... how to query this?
+        update_time: DEFAULT_TIMESTAMP.to_string(),
+      }
+    }
+    None => CommissionInfo::default()
+  };
+
+  let stake = rpc::get_validator_stake(app_state.get_client(), current_epoch, &validator).await?;
+
+  let validator_info = ValidatorInfo {
+    operator_address: Some(validator.clone()),
+    consensus_pubkey: Some(ConsensusKeyInfo {
+      at_type: "placeholder".to_string(),
+      key: "placeholder".to_string(),
+    }),
+    jailed: Some(jailed),
+    status: Some(status),
+    tokens: Some(stake.div(NATIVE_SCALE as u64)),
+    delegator_shares: Some(stake.to_string_native()),
+    description: Some(description),
+    //TODO: how to query this info
+    unbonding_height: Some("0".to_string()),
+    unbonding_time: Some(DEFAULT_TIMESTAMP.to_string()),
+    commission: Some(commission),
+    min_self_delegation: Some("1".to_string()),
+  };
+  response.validator=validator_info;
+
+  Ok(Json(response))
+}
+
+
+pub async fn validators_handler(query: Query<ValidatorsQueryParams>, State(app_state): State<Arc<AppState>>)
   -> Result<Json<ValidatorsResponse>, ApiError> {
 
   // TODO: pagination support
@@ -106,22 +171,22 @@ pub async fn validators_handler(query: Query<ValidatorsQueryParams>, State(app_s
 
       // Contruct response info
       let validator_info = ValidatorInfo {
-        operator_address: val.clone(),
+        operator_address: Some(val.clone()),
         // TODO: Consensus key
-        consensus_pubkey: ConsensusKeyInfo {
+        consensus_pubkey: Some(ConsensusKeyInfo {
           at_type: "placeholder".to_string(),
           key: "placeholder".to_string(),
-        },
-        jailed,
-        status,
-        tokens: stake.div(NATIVE_SCALE as u64),
-        delegator_shares: stake.to_string_native(),
-        description,
+        }),
+        jailed: Some(jailed),
+        status: Some(status),
+        tokens: Some(stake.div(NATIVE_SCALE as u64)),
+        delegator_shares: Some(stake.to_string_native()),
+        description: Some(description),
         //TODO: how to query this info
-        unbonding_height: "0".to_string(),
-        unbonding_time: DEFAULT_TIMESTAMP.to_string(),
-        commission,
-        min_self_delegation: "1".to_string(),
+        unbonding_height: Some("0".to_string()),
+        unbonding_time: Some(DEFAULT_TIMESTAMP.to_string()),
+        commission: Some(commission),
+        min_self_delegation: Some("1".to_string()),
       };
       response.validators.push(validator_info);
     }
@@ -129,7 +194,7 @@ pub async fn validators_handler(query: Query<ValidatorsQueryParams>, State(app_s
 
   response.pagination = PaginationInfo {
       next_key: None,
-      total: Some("1".to_string()), 
+      total: Some("1".to_string()),
     };
 
   Ok(Json(response))

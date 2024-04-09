@@ -1,3 +1,4 @@
+use prost_types::Struct;
 use serde::{Deserialize, Serialize};
 use namada_sdk::types::{address::Address, dec::Dec, token::Amount};
 use crate::model::shared::{SuffixedDur, PaginationInfo, PaginationQueryParams};
@@ -45,19 +46,50 @@ impl ValidatorsResponse {
 }
 
 #[derive(Serialize)]
-pub struct ValidatorInfo {
-  pub operator_address: Address,
-  pub consensus_pubkey: ConsensusKeyInfo,
-  pub jailed: bool,
-  pub status: CosmosValStatus,
-  pub tokens: Amount,
-  pub delegator_shares: String,
-  pub description: ValidatorDescription,
-  pub unbonding_height: String,
-  pub unbonding_time: String,
-  pub commission: CommissionInfo,
-  pub min_self_delegation: String,
+pub struct ValidatorResponse {
+  pub validator: ValidatorInfo,
 }
+impl Default for ValidatorInfo {
+  fn default() -> Self {
+    ValidatorInfo {
+      operator_address: None,
+      consensus_pubkey: None,
+      jailed: None,
+      status: None,
+      tokens: None,
+      delegator_shares:None,
+      description: None,
+      unbonding_height: None,
+      unbonding_time: None,
+      commission: None,
+      min_self_delegation: None
+    }
+  }
+}
+
+impl ValidatorResponse {
+  pub fn new() -> Self {
+    ValidatorResponse {
+      validator: ValidatorInfo::default(),
+    }
+  }
+}
+
+#[derive(Serialize)]
+pub struct ValidatorInfo {
+  pub operator_address: Option<Address>,
+  pub consensus_pubkey: Option<ConsensusKeyInfo>,
+  pub jailed: Option<bool>,
+  pub status: Option<CosmosValStatus>,
+  pub tokens: Option<Amount>,
+  pub delegator_shares: Option<String>,
+  pub description: Option<ValidatorDescription>,
+  pub unbonding_height: Option<String>,
+  pub unbonding_time: Option<String>,
+  pub commission: Option<CommissionInfo>,
+  pub min_self_delegation: Option<String>,
+}
+
 
 #[derive(Serialize)]
 pub struct ConsensusKeyInfo {
